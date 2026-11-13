@@ -21,6 +21,50 @@ add new features; major releases introduce breaking changes.
 
 ---
 
+## v.1.2.0 — Configurable Deploy & Sync
+
+**Tag:** `v.1.2.0`
+**Date:** 2026-11-13
+
+Makes the staging ↔ production scripts project-agnostic. Every site-specific
+value now comes from a `.env` file. Previously both scripts were written for
+yadepan.com. Specification in [`docs/issues/issue004.md`](docs/issues/issue004.md).
+
+### Added
+
+**`deploy-stg-to-prod.sh` and `sync-prod-to-stg.sh`.** Promote staging to
+production, or refresh staging from production. Both run with `--dry-run`
+(plan only) and `--yes` (required for any write). Each run backs up the target
+first and prints the rollback paths.
+
+**`.env` configuration** (`.env.example` → `.env`). Required keys: `PROD_URL`,
+`STG_URL`, `BASE_DIR`, `PROD_PATH`, `STG_PATH`, `BACKUP_DIR`, `DB_CONTAINER`,
+`APP_CONTAINER`, `PROD_WP_PATH`, `STG_WP_PATH`. The file is parsed, never
+sourced.
+
+**`PROD_TABLE_PREFIX` / `STG_TABLE_PREFIX`.** Set the table prefix each side
+ends up with. Unset keeps the current prefix. When set, the imported tables are
+renamed and the target `wp-config.php` is rewritten to match.
+
+**`lib/deploy_config.sh`.** Shared `.env` parser and `wp-config.php` helpers
+used by both scripts.
+
+### Changed
+
+- The deploy and sync scripts no longer contain hard-coded hostnames, paths,
+  container names or plugin slugs.
+- The header script (`HEADER_SCRIPT`) and security plugins
+  (`SECURITY_PLUGINS`, `PROD_SECURITY_PLUGIN`) are optional and skipped when
+  unset.
+
+### Fixed
+- (none)
+
+### Removed
+- (none)
+
+---
+
 ## v.1.1.1 — Backup DB Container & Docroot Resolution Hardening
 
 **Tag:** `v.1.1.1`

@@ -10,6 +10,8 @@ A pair of robust bash scripts for backing up and restoring WordPress installatio
 | [`wp_restore.sh`](wp_restore.sh) | Restore WordPress from a backup archive |
 | [`webserver_backup.sh`](webserver_backup.sh) | Back up webserver configuration (Apache, OLS, Nginx) |
 | [`webserver_restore.sh`](webserver_restore.sh) | Restore webserver configuration from a backup archive |
+| [`deploy-stg-to-prod.sh`](deploy-stg-to-prod.sh) | Promote staging to production (files, DB, URLs, table prefix) |
+| [`sync-prod-to-stg.sh`](sync-prod-to-stg.sh) | Refresh staging from production (files, DB, URLs, table prefix) |
 
 The `wp_*` scripts work on **any web server** that serves WordPress — Nginx, Apache, OpenLiteSpeed, LiteSpeed Enterprise, or Caddy — because they operate at the filesystem and database level only. The `webserver_*` scripts back up the webserver configuration itself, which lives **outside** WordPress.
 
@@ -584,6 +586,58 @@ On the target stack, the compose project name is different — so `old-stack-db`
 - `--dry-run` shows exactly which tables would be dropped and which DB they live in — **without** touching anything
 - The new `wp-config.php` is patched via `sed` with literal replacements; the script refuses to patch if the new prefix or any DB credential is empty
 - Without `-r`, no live tables are ever touched — only the new `wp-config.php` is rewritten to match the actual import source
+
+## Deploy & Sync (staging ↔ production)
+
+`deploy-stg-to-prod.sh` and `sync-prod-to-stg.sh` are project-agnostic. All
+site values come from a `.env` file, so the same scripts serve any WordPress
+project. Added in v.1.2.0 — see [`docs/issues/issue004.md`](docs/issues/issue004.md).
+
+```bash
+cp .env.example .env && chmod 600 .env   # then edit .env
+sudo ./deploy-stg-to-prod.sh stg prod --dry-run   # print plan, change nothing
+sudo ./deploy-stg-to-prod.sh stg prod --yes       # apply
+sudo ./sync-prod-to-stg.sh prod stg --dry-run
+sudo ./sync-prod-to-stg.sh prod stg --yes
+```
+
+Options: `--dry-run` (plan only), `--yes` (required for any write),
+`--env-file <path>` (default: `$ENV_FILE` or `.env` next to the script).
+
+### `.env` keys
+
+| Key | Required | Purpose |
+|-----|----------|---------|
+| `PROD_URL` | yes | Production URL, with scheme |
+| `STG_URL` | yes | Staging URL, with scheme |
+| `BASE_DIR` | yes | Host directory containing both file trees |
+| `PROD_PATH` / `STG_PATH` | yes | Host paths of production / staging files |
+| `BACKUP_DIR` | yes | Where pre-run dumps and tarballs are written |
+| `DB_CONTAINER` / `APP_CONTAINER` | yes | MariaDB and WordPress/wp-cli container names |
+| `PROD_WP_PATH` / `STG_WP_PATH` | yes | Docroots inside `APP_CONTAINER` |
+| `PROD_TABLE_PREFIX` | no | Prefix production ends up with (deploy). Unset = keep current |
+| `STG_TABLE_PREFIX` | no | Prefix staging ends up with (sync). Unset = adopt production's |
+| `HEADER_SCRIPT` / `HEADER_THEME_MOD` | no | Tracking tag written to prod theme mod (default `header_scripts`) |
+| `PROD_SECURITY_PLUGIN` | no | Slug activated on production after deploy |
+| `SECURITY_PLUGINS` | no | Comma-separated slugs deactivated on staging after sync |
+| `PROD_WP_OWNER` | no | `user:group` applied after prod file sync (default `nobody:nogroup`) |
+
+The file is **parsed, not sourced**: `KEY=VALUE`, optional quotes, `#` comments.
+Prefix values may contain only letters, digits and `_`.
+
+### Table prefix behaviour
+
+- **Deploy** (`PROD_TABLE_PREFIX`): imported tables are renamed to the target
+  prefix, `usermeta`/`options` keys are rewritten, and prod `wp-config.php`
+  gets the new `$table_prefix`.
+- **Sync** (`STG_TABLE_PREFIX`): same rename, applied to staging's
+  `wp-config.php`. Unset means staging adopts production's prefix.
+
+### Safety
+
+- Production (or staging, for sync) is backed up to `BACKUP_DIR` before any write.
+- The backup paths are printed at the end. Restore them to roll back.
+- `wp-config.php` and `.htaccess` are never overwritten by the file sync.
 
 ## Recovery Process
 
