@@ -14,6 +14,8 @@ CONFIRMED=0
 SRC_ARG=""
 DST_ARG=""
 ENV_FILE="${ENV_FILE:-$SCRIPT_DIR/.env}"
+# Staging is hidden from search engines after a sync (blog_public=0); production is indexable.
+STG_BLOG_PUBLIC=0
 
 log() { printf '%s [%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$(basename "$0")" "$*"; }
 die() { log "ERROR: $*" >&2; exit 1; }
@@ -45,8 +47,10 @@ parse_args() {
     shift
   done
   [[ -n "$SRC_ARG" && -n "$DST_ARG" ]] || usage
-  [[ "$SRC_ARG" == "$SRC_ENV" && "$DST_ARG" == "$DST_ENV" ]] \
-    || die "only '$SRC_ENV' -> '$DST_ENV' is supported"
+  if [[ "$SRC_ARG" != "$SRC_ENV" || "$DST_ARG" != "$DST_ENV" ]]; then
+    log "ERROR: only '$SRC_ENV' -> '$DST_ENV' is supported" >&2
+    usage
+  fi
   if [[ $DRY_RUN -eq 0 && $CONFIRMED -eq 0 ]]; then
     die "refusing to overwrite staging without --yes (or use --dry-run)"
   fi
@@ -95,6 +99,9 @@ load_config() {
 
   # Target prefix: STG_TABLE_PREFIX when set, otherwise production's prefix (staging adopts it).
   DST_PREFIX="${STG_TABLE_PREFIX:-$SRC_PREFIX}"
+
+  # Validated here, before any backup or write, so a bad slug aborts with nothing changed.
+  build_rsync_excludes "$SECURITY_PLUGINS"
 }
 
 print_plan() {
@@ -133,8 +140,7 @@ sync_files() {
   command -v rsync >/dev/null || die "rsync is not installed (sudo apt install rsync)"
   log "Syncing files $SRC_ENV -> $DST_ENV"
   rsync -a --delete \
-    --exclude 'wp-config.php' --exclude 'wp-config-docker.php' --exclude '.htaccess' \
-    --exclude 'wordfence-waf.php' --exclude 'aios-bootstrap.php' \
+    "${RSYNC_EXCLUDES[@]}" \
     "$SRC_PATH/" "$DST_PATH/"
 }
 
@@ -183,7 +189,7 @@ search_replace() {
 
 discourage_indexing() {
   log "Discouraging search engines on staging"
-  wpx "$DST_WP_PATH" option update blog_public 0
+  wpx "$DST_WP_PATH" option update blog_public "$STG_BLOG_PUBLIC"
 }
 
 deactivate_security_plugins() {
@@ -209,7 +215,7 @@ verify() {
   local home; home="$(wpx "$DST_WP_PATH" option get home)"
   [[ "$home" == "$STG_URL" ]] || die "staging home is '$home', expected '$STG_URL'"
   local bp; bp="$(wpx "$DST_WP_PATH" option get blog_public)"
-  [[ "$bp" == "0" ]] || die "blog_public is '$bp', expected 0"
+  [[ "$bp" == "$STG_BLOG_PUBLIC" ]] || die "blog_public is '$bp', expected $STG_BLOG_PUBLIC"
   local prefix; prefix="$(wpx "$DST_WP_PATH" config get table_prefix)"
   [[ "$prefix" == "$DST_PREFIX" ]] || die "staging table_prefix is '$prefix', expected '$DST_PREFIX'"
   local code; code="$(curl -s -o /dev/null -w '%{http_code}' "$STG_URL" || true)"

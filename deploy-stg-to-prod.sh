@@ -14,6 +14,8 @@ CONFIRMED=0
 SRC_ARG=""
 DST_ARG=""
 ENV_FILE="${ENV_FILE:-$SCRIPT_DIR/.env}"
+# Production is indexable after a deploy (blog_public=1); staging is not (see sync-prod-to-stg.sh).
+PROD_BLOG_PUBLIC=1
 
 log() { printf '%s [%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$(basename "$0")" "$*"; }
 die() { log "ERROR: $*" >&2; exit 1; }
@@ -45,8 +47,10 @@ parse_args() {
     shift
   done
   [[ -n "$SRC_ARG" && -n "$DST_ARG" ]] || usage
-  [[ "$SRC_ARG" == "$SRC_ENV" && "$DST_ARG" == "$DST_ENV" ]] \
-    || die "only '$SRC_ENV' -> '$DST_ENV' is supported"
+  if [[ "$SRC_ARG" != "$SRC_ENV" || "$DST_ARG" != "$DST_ENV" ]]; then
+    log "ERROR: only '$SRC_ENV' -> '$DST_ENV' is supported" >&2
+    usage
+  fi
   if [[ $DRY_RUN -eq 0 && $CONFIRMED -eq 0 ]]; then
     die "refusing to change production without --yes (or use --dry-run)"
   fi
@@ -102,6 +106,9 @@ load_config() {
   # Target prefix: PROD_TABLE_PREFIX when set, otherwise production's current prefix.
   DST_PREFIX="${PROD_TABLE_PREFIX:-$DST_PREFIX_CURRENT}"
   [[ "$SRC_PREFIX" != "$DST_PREFIX" ]] || log "note: table prefixes are identical; rename step is skipped"
+
+  # Validated here, before any backup or write, so a bad slug aborts with nothing changed.
+  build_rsync_excludes "$PROD_SECURITY_PLUGIN"
 }
 
 print_plan() {
@@ -145,8 +152,7 @@ sync_files() {
   [[ $EUID -eq 0 ]] || die "run with sudo: www/ files are owned by the container user"
   log "Syncing files $SRC_ENV -> $DST_ENV"
   rsync -a --no-owner --no-group --omit-dir-times --delete \
-    --exclude 'wp-config.php' --exclude 'wp-config-docker.php' --exclude '.htaccess' \
-    --exclude 'wordfence-waf.php' --exclude 'aios-bootstrap.php' \
+    "${RSYNC_EXCLUDES[@]}" \
     "$SRC_PATH/" "$DST_PATH/"
   docker exec "$APP_CONTAINER" chown -R "$PROD_WP_OWNER" "$DST_WP_PATH"
 }
@@ -201,7 +207,7 @@ search_replace() {
 
 allow_indexing() {
   log "Allowing search engines to index production"
-  wpx "$DST_WP_PATH" option update blog_public 1
+  wpx "$DST_WP_PATH" option update blog_public "$PROD_BLOG_PUBLIC"
 }
 
 set_header_script() {
@@ -234,7 +240,7 @@ verify() {
   local db_now; db_now="$(wpx "$DST_WP_PATH" db query 'SELECT DATABASE()' --skip-column-names)"
   [[ "$db_now" == "$DST_DB" ]] || die "prod wp-cli is connected to '$db_now', expected '$DST_DB'"
   local bp; bp="$(wpx "$DST_WP_PATH" option get blog_public)"
-  [[ "$bp" == "1" ]] || die "blog_public is '$bp', expected 1"
+  [[ "$bp" == "$PROD_BLOG_PUBLIC" ]] || die "blog_public is '$bp', expected $PROD_BLOG_PUBLIC"
   local cfg_prefix; cfg_prefix="$(wpx "$DST_WP_PATH" config get table_prefix)"
   [[ "$cfg_prefix" == "$DST_PREFIX" ]] || die "prod table_prefix is '$cfg_prefix', expected '$DST_PREFIX'"
   local code; code="$(curl -s -o /dev/null -w '%{http_code}' "$PROD_URL" || true)"
