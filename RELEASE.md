@@ -14,7 +14,7 @@ add new features; major releases introduce breaking changes.
 - (none yet)
 
 ### Fixed
-- (none yet)
+- `sync-prod-to-stg.sh` now copies production's `.htaccess` to staging, so non-home permalinks no longer 404 after sync. Optional `STG_HTACCESS_APPEND` adds staging-only rules. Rewrite rules are flushed and a permalink routing check runs at the end. See [docs/issues/issue005.md](docs/issues/issue005.md).
 
 ### Removed
 - (none yet)

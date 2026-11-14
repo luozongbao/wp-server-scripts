@@ -620,6 +620,7 @@ Options: `--dry-run` (plan only), `--yes` (required for any write),
 | `HEADER_SCRIPT` / `HEADER_THEME_MOD` | no | Tracking tag written to prod theme mod (default `header_scripts`) |
 | `PROD_SECURITY_PLUGIN` | no | Slug activated on production after deploy |
 | `SECURITY_PLUGINS` | no | Comma-separated slugs deactivated on staging after sync |
+| `STG_HTACCESS_APPEND` | no | File appended to production's `.htaccess` when syncing to staging (staging-only rules) |
 | `PROD_WP_OWNER` | no | `user:group` applied after prod file sync (default `nobody:nogroup`) |
 
 The file is **parsed, not sourced**: `KEY=VALUE`, optional quotes, `#` comments.
@@ -637,7 +638,10 @@ Prefix values may contain only letters, digits and `_`.
 
 - Production (or staging, for sync) is backed up to `BACKUP_DIR` before any write.
 - The backup paths are printed at the end. Restore them to roll back.
-- `wp-config.php` and `.htaccess` are never overwritten by the file sync.
+- `wp-config.php` is never overwritten by the file sync.
+- **Sync** copies production's `.htaccess` to staging (plus `STG_HTACCESS_APPEND` if set), then runs `wp rewrite flush --hard`. Without this, staging returns 404 for non-home URLs.
+- **Deploy** never touches `.htaccess`; production keeps its own.
+- After the run, sync checks the home page and one published permalink. It fails if the permalink does not return 200, 301 or 302.
 
 ## Recovery Process
 

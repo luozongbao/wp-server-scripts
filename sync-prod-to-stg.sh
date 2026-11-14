@@ -79,9 +79,13 @@ load_env() {
   STG_WP_PATH="$(deploy_env_get STG_WP_PATH)"
   STG_TABLE_PREFIX="$(deploy_env_get STG_TABLE_PREFIX)"
   SECURITY_PLUGINS="$(deploy_env_get SECURITY_PLUGINS)"
+  STG_HTACCESS_APPEND="$(deploy_env_get STG_HTACCESS_APPEND)"
 
   if [[ -n "$STG_TABLE_PREFIX" ]]; then
     [[ "$STG_TABLE_PREFIX" =~ ^[A-Za-z0-9_]+$ ]] || die "STG_TABLE_PREFIX may only contain letters, digits and underscores"
+  fi
+  if [[ -n "$STG_HTACCESS_APPEND" ]]; then
+    [[ -r "$STG_HTACCESS_APPEND" ]] || die "STG_HTACCESS_APPEND is not readable: $STG_HTACCESS_APPEND"
   fi
 }
 
@@ -102,11 +106,18 @@ load_config() {
 
   # Validated here, before any backup or write, so a bad slug aborts with nothing changed.
   build_rsync_excludes "$SECURITY_PLUGINS"
+  # .htaccess is copied from production by sync_htaccess(), not by rsync.
+  local kept=() e
+  for e in "${RSYNC_EXCLUDES[@]}"; do
+    [[ "$e" == "--exclude=.htaccess" ]] || kept+=("$e")
+  done
+  RSYNC_EXCLUDES=("${kept[@]}")
 }
 
 print_plan() {
   log "Plan: $SRC_ENV -> $DST_ENV  (config: $ENV_FILE)"
-  log "  files   : $SRC_PATH/ -> $DST_PATH/ (wp-config*.php, .htaccess kept on staging)"
+  log "  files   : $SRC_PATH/ -> $DST_PATH/ (wp-config*.php kept on staging)"
+  log "  htaccess: $SRC_PATH/.htaccess -> $DST_PATH/.htaccess${STG_HTACCESS_APPEND:+ + $STG_HTACCESS_APPEND}"
   log "  db      : '$SRC_DB' -> '$DST_DB'"
   log "  prefix  : '$OLD_STG_PREFIX' -> '$DST_PREFIX' (set in staging wp-config.php)"
   log "  url     : $PROD_URL -> $STG_URL"
@@ -117,6 +128,7 @@ print_plan() {
     log "  post    : no security plugins configured"
   fi
   log "  post    : discourage search engines on"
+  log "  post    : flush rewrite rules (--hard), then routing check"
   log "  backup  : $BACKUP_DIR (staging DB + files before overwrite)"
 }
 
@@ -142,6 +154,24 @@ sync_files() {
   rsync -a --delete \
     "${RSYNC_EXCLUDES[@]}" \
     "$SRC_PATH/" "$DST_PATH/"
+}
+
+# Without production's rewrite rules, every non-home permalink returns 404 (issue005).
+sync_htaccess() {
+  local src="$SRC_PATH/.htaccess" dst="$DST_PATH/.htaccess" tmp
+  if [[ ! -f "$src" ]]; then
+    log "WARNING: $src not found; staging .htaccess left unchanged"
+    return 0
+  fi
+  log "Copying production .htaccess to staging"
+  tmp="$(mktemp)"
+  cat "$src" > "$tmp"
+  if [[ -n "$STG_HTACCESS_APPEND" ]]; then
+    printf '\n' >> "$tmp"
+    cat "$STG_HTACCESS_APPEND" >> "$tmp"
+  fi
+  cat "$tmp" > "$dst"
+  rm -f "$tmp"
 }
 
 copy_database() {
@@ -207,6 +237,11 @@ deactivate_security_plugins() {
   done
 }
 
+flush_rewrite_rules() {
+  log "Flushing rewrite rules on staging"
+  wpx "$DST_WP_PATH" rewrite flush --hard
+}
+
 verify() {
   log "Verifying $DST_DB and $STG_URL"
   wpx "$DST_WP_PATH" core is-installed || die "WordPress is not installed on staging after sync"
@@ -220,6 +255,15 @@ verify() {
   [[ "$prefix" == "$DST_PREFIX" ]] || die "staging table_prefix is '$prefix', expected '$DST_PREFIX'"
   local code; code="$(curl -s -o /dev/null -w '%{http_code}' "$STG_URL" || true)"
   log "HTTP $code from $STG_URL"
+  # A home-page 200 does not prove routing works; probe a real permalink too.
+  local probe; probe="$(wpx "$DST_WP_PATH" post list --post_status=publish --posts_per_page=1 --field=url || true)"
+  if [[ -z "$probe" ]]; then
+    log "WARNING: no published post found; permalink routing check skipped"
+    return 0
+  fi
+  local pcode; pcode="$(curl -s -o /dev/null -w '%{http_code}' "$probe" || true)"
+  [[ "$pcode" == 200 || "$pcode" == 301 || "$pcode" == 302 ]] || die "permalink $probe returned HTTP $pcode on staging (rewrite rules?)"
+  log "HTTP $pcode from $probe (permalink routing check)"
 }
 
 remind() {
@@ -242,12 +286,14 @@ main() {
 
   backup_staging
   sync_files
+  sync_htaccess
   copy_database
   rename_prefix
   set_staging_prefix
   search_replace
   discourage_indexing
   deactivate_security_plugins
+  flush_rewrite_rules
   verify
   remind
 }
